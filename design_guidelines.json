@@ -1,0 +1,90 @@
+{
+  "project": "VEXOR",
+  "language": "pt-BR",
+  "context": "hybrid_fullstack_app",
+  "theme": "dark tech professional",
+  "design_direction": "A command room for human connection: precise enough for work, warm enough for community. Fuse Swiss information design, broadcast control rooms, and tactile audio hardware without copying Discord.",
+  "discovery": {
+    "audience": ["community builders", "remote teams", "gaming and creator groups", "friends coordinating in real time"],
+    "primary_tasks": ["enter a community", "scan presence and channels", "send realtime messages", "start a DM", "invite and manage members", "reach future voice/screen-share controls"],
+    "success_actions": ["create account", "join a community", "send first message", "create invite", "open a voice-ready room"],
+    "emotional_tone": ["focused", "confident", "alive", "welcoming"],
+    "content_strategy": "Use concise labels, visible status, message grouping, and progressive disclosure. Make the active conversation the scene; supporting navigation should feel like a calibrated instrument panel."
+  },
+  "design_options": [
+    {"name":"Signal Room","probability":0.32,"description":"Obsidian command center with bone text, signal orange actions, compact mono metadata, and warm amber presence dots. Swiss grid plus audio-console controls.","best_for":"core workspace and admin"},
+    {"name":"Night Transit","probability":0.24,"description":"Midnight navy surfaces, electric cyan as functional signal, coral for alerts, with route-map separators and station-like channel naming.","best_for":"community discovery and invites"},
+    {"name":"Studio Relay","probability":0.18,"description":"Charcoal canvas with paper-white message surfaces, red editorial annotations, and waveform-like dividers. Editorial layout fused with broadcast production UI.","best_for":"creator communities"},
+    {"name":"Copper Static","probability":0.14,"description":"Warm black, muted copper, parchment accents, and restrained grain. Tactile hi-fi equipment meets old-money tech; premium without gradients.","best_for":"private DMs and profiles"},
+    {"name":"Field Grid","probability":0.12,"description":"Blue-black utility shell, safety yellow only for active state, pale gray content, and exposed 1px grid borders. Industrial field operations meets social messaging.","best_for":"moderation and permissions"}
+  ],
+  "research": {
+    "references": [
+      {"source":"https://designmd.ai/chef/blurple-guild","descriptors":["three-column community shell","dark charcoal message panel","near-white readable text","cozy and compact message density"]},
+      {"source":"https://www.shadcn.io/blocks/chat-discord-style","descriptors":["role-colored usernames","avatar stacking for grouped messages","hover reaction controls"]},
+      {"source":"https://www.shadcn.io/blocks/chat-dark-theme","descriptors":["zinc-950 foundation","indigo interaction accents","motion-enabled chat states"]},
+      {"source":"https://mobbin.com/explore/mobile/app-categories/communication","descriptors":["stacked lists and tab navigation","avatars and online status dots","badges, chips, toasts","clear join/create/edit/leave states"]}
+    ],
+    "adaptation": "Borrow structural clarity, not brand color or Discord conventions. VEXOR uses asymmetric emphasis, an editorial active-channel header, and tactile status controls."
+  },
+  "typography": {
+    "heading_font":"Barlow Condensed",
+    "body_font":"IBM Plex Sans",
+    "metadata_font":"IBM Plex Mono",
+    "reason":"Condensed display gives VEXOR a broadcast/control-room voice; Plex Sans stays highly legible; mono makes realtime state feel instrument-like.",
+    "rules":["Never use Inter, Roboto, Open Sans, or Lato for headings.","H1 text-4xl sm:text-5xl lg:text-6xl maximum, tracking-tight, leading-none.","H2 text-2xl sm:text-3xl lg:text-4xl.","H3 text-xl sm:text-2xl.","Body text-sm mobile and text-base desktop, leading-relaxed.","Overlines uppercase text-xs with tracking-[0.2em].","Use font-[350] for quiet labels and font-[850] for major impact."]
+  },
+  "colors": {
+    "archetype":"Swiss & high-contrast with a warm hardware twist",
+    "tokens":{"background":"#111416","surface":"#181C1F","surfaceRaised":"#22282C","surfaceWarm":"#292521","foreground":"#F2F0EA","mutedForeground":"#AAB0AF","border":"#343B3D","primary":"#F26B38","primaryForeground":"#17191A","secondary":"#A7D8C8","accent":"#F2C94C","success":"#62C49A","danger":"#F06A67"},
+    "rules":["Do not use #000000 or #808080.","No full-screen gradients; use flat layers, grain, and borders.","Primary orange is reserved for CTA, active send, and one key status at a time.","Danger is never the only indicator; pair with text or icon.","Verify normal text at 4.5:1 and large text at 3:1 minimum.","Avoid forbidden #7351B7 and dashboard teal #1B93A4."]
+  },
+  "visual_enhancers": {
+    "grain":"Use a subtle fixed noise texture at opacity 0.025, pointer-events-none, aria-hidden=true.",
+    "borders":"Use 1px tinted borders and exposed grid seams; no excessive shadows.",
+    "surfaces":"Flat solid surfaces for data and chat. Use crystal glass only for sticky nav, modals, and toasts with bg-[#181C1F]/90, backdrop-blur-xl, backdrop-saturate-150, and an inner border.",
+    "scrollbar":"Customize narrow scrollbar thumb #3A4446 on track #111416; no gutter.",
+    "icons":"Use lucide-react, 16-20px, never emoji. Audio icons should be paired with labels in critical controls.",
+    "texture_rule":"Use rough grain against smooth UI to create human tactility; keep decoration under 20% of visible area."
+  },
+  "component_name": {
+    "app_shell":"VexorWorkspaceShell",
+    "navigation":"CommunityRail, ChannelRail, TopBar",
+    "communication":"MessageThread, MessageComposer, PresenceList, DirectMessageList",
+    "community":"CommunitySwitcher, InviteDialog, MemberRow",
+    "permissions":"RoleMatrix, PermissionToggle, ModerationLog",
+    "voice_ready":"VoiceDock, ScreenShareEntry",
+    "landing":"LandingHero, FeatureTetris, ProofStrip"
+  },
+  "component_path": "/app/frontend/src/components/",
+  "implementation_guidance_js": ["Use .js/.jsx files, not .tsx files.","Use pure HTML + Tailwind for landing layout; use existing shadcn primitives for dialogs, dropdown menus, inputs, tabs, sheets, toasts, and forms.","Customize existing UI primitives rather than adding rigid generic cards.","Use sonner from src/components/ui/sonner.jsx or the existing local convention for feedback.","Use WebSocket for presence/messages in MVP; WebRTC controls are entry points and preparation only, not a fake connected call."],
+  "grids": {
+    "workspace":"Mobile-first grid-cols-1; desktop grid-cols-[72px_248px_minmax(0,1fr)_248px], gap-0, visible seams. Keep direct grid children.",
+    "landing":"grid-cols-1 md:grid-cols-8 lg:grid-cols-12 with gap-8 to gap-12. Mix hero 8 columns, square 4, tall 4, and offset filler; leave breathing room.",
+    "admin":"grid-cols-1 md:grid-cols-3 lg:grid-cols-4, gap-4 or gap-6. Primary data spans 2 columns and member/moderation feed is tall.",
+    "mobile":"Use Sheet for rails, bottom navigation for primary destinations, and never let images exceed max-h-[80vh] md:max-h-none."
+  },
+  "layouts": {
+    "landing":"Solid header with logo, 4 desktop links, CTA; asymmetric left-aligned hero; product screenshot/illustration as a close-up; feature grid; realtime proof; contrast-shift footer.",
+    "auth":"Left editorial statement and right solid form panel on desktop; single-column form on mobile; use shadcn Input/Form and explicit validation.",
+    "workspace":"Community rail -> channel rail -> active thread -> member/presence rail. Top bar names context and exposes search, invite, and voice-ready actions. Composer is anchored but never transparent.",
+    "dm":"Use the same thread mechanics with a quieter Copper Static surface; keep recipient status and safety actions visible.",
+    "settings":"Left settings navigation, dense bordered sections, role matrix and moderation log. Use Dialog/DropdownMenu/Select primitives, not native select."
+  },
+  "motion": {
+    "entrance":"Stagger rails and thread sections 40ms apart; translate 8px and fade in.",
+    "hover":"Buttons use transform translateY(-1px), background-color and color transitions only; message actions fade in on row hover.",
+    "presence":"Online dot softly pulses once on status change, never continuously for all users.",
+    "loading":"Use skeleton rows and an understated three-bar typing indicator.",
+    "reduced_motion":"Wrap nonessential animation in prefers-reduced-motion and reduce duration to 1ms; do not remove focus or status feedback.",
+    "rule":"Never use transition: all. Always define specific properties."
+  },
+  "accessibility": {
+    "requirements":["Every button, link, input, menu, key metric, presence status, confirmation, and error needs a kebab-case data-testid.","Keyboard focus uses a 2px high-contrast ring; never rely on color alone.","Use aria-label for icon-only controls and aria-hidden=true for decoration.","Announce new messages and connection errors with aria-live.","Respect reduced motion and maintain readable contrast over every surface.","Mobile touch targets minimum 44px."]
+  },
+  "media": {"needed":false,"instruction":"Do not add stock photos or placeholder URLs. VEXOR can be distinctive with CSS grain, SVG waveform marks, avatars generated from initials, and product UI close-ups. If future media is requested, use image_selector_tool only."},
+  "3d_libraries": {"selected":false,"reason":"MVP success depends on scanability and realtime communication, not immersion.","future":"If a marketing hero later needs depth, lazy-load React Three Fiber with Suspense and transparent canvas; keep adequate lighting and do not compromise auth/workspace performance."},
+  "realtime_architecture_visual_contract": {"websocket":"Show connection state as text (Connected, Reconnecting, Offline) with data-testid; optimistic messages must show pending state and retry affordance.","webrtc":"Show microphone, voice room, system audio, and screen-share entry points as prepared controls. Clearly label unavailable/not connected states until signaling and media permissions are implemented.","auth":"Email/password now; visually reserve Google as a disabled future provider only if product copy explicitly explains it is coming later."},
+  "general_ui_ux_design_guidelines":["Every page has a visible, readable navigation context; desktop links remain visible.","Never use a fully transparent header or overlay under content; use solid or glass surfaces with blur and border.","Avoid generic centered layouts, uniform cards, simplistic gradients, and excessive rounded corners.","Use generous spacing: p-6/p-8 for bordered containers, py-20 or py-32 for major sections.","Left-align reading content; center only when it improves a deliberate composition.","All interactive elements have hover, pressed, focus, and disabled states with explicit text color.","Use only primary color for key CTAs; preserve neutral hierarchy elsewhere.","Use Sonner for toasts; use Shadcn Dialog, DropdownMenu, Select, Calendar, Sheet, Tabs and Form for advanced interaction.","Never use assistant emoji as icons.","Test at mobile, tablet, desktop, keyboard navigation, reduced motion, and offline/reconnecting states."],
+  "instructions_to_main_agent": "Implement Signal Room as the primary direction. Treat the workspace as a real product shell, not a static mock: preserve API boundaries, WebSocket events, auth states, error/loading/empty states, and test IDs. Keep WebRTC visibly prepared but do not claim a working call unless signaling and media permissions are real."
+}
