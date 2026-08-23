@@ -1,33 +1,114 @@
-from fastapi import FastAPI, APIRouter, WebSocket, WebSocketDisconnect
-from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
-import os
-import logging
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List
+from typing import Any, Dict, List, Optional
+import hashlib
+import logging
+import os
+import secrets
 import uuid
-from datetime import datetime, timezone
 
+import bcrypt
+import jwt
+from dotenv import load_dotenv
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from motor.motor_asyncio import AsyncIOMotorClient
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from starlette.middleware.cors import CORSMiddleware
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
-
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
+load_dotenv(ROOT_DIR / ".env")
+mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
-
-# Create the main app without a prefix
-app = FastAPI()
-
-# Create a router with the /api prefix
+db = client[os.environ["DB_NAME"]]
+app = FastAPI(title="VEXOR API")
 api_router = APIRouter(prefix="/api")
+security = HTTPBearer(auto_error=False)
+JWT_SECRET = os.environ.get("JWT_SECRET", secrets.token_urlsafe(32))
+JWT_ALGORITHM = "HS256"
+ACCESS_MINUTES = 30
+REFRESH_DAYS = 14
+
+def now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+def public_user(user: Dict[str, Any]) -> Dict[str, Any]:
+    return {"id": user["id"], "email": user["email"], "username": user["username"], "role": user.get("role", "Member"), "verified": user.get("verified", False)}
+
+def hash_password(value: str) -> str:
+    return bcrypt.hashpw(value.encode(), bcrypt.gensalt()).decode()
+
+def check_password(value: str, hashed: str) -> bool:
+    return bcrypt.checkpw(value.encode(), hashed.encode())
+
+def sign_token(user_id: str, token_type: str, expires: timedelta, jti: Optional[str] = None) -> str:
+    payload = {"sub": user_id, "type": token_type, "exp": datetime.now(timezone.utc) + expires, "jti": jti or str(uuid.uuid4())}
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+async def current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict[str, Any]:
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Autenticação necessária")
+    try:
+        payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if payload.get("type") != "access":
+            raise ValueError("invalid token type")
+    except (jwt.PyJWTError, ValueError):
+        raise HTTPException(status_code=401, detail="Sessão inválida ou expirada")
+    user = await db.users.find_one({"id": payload["sub"]}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=401, detail="Usuário não encontrado")
+    return user
+
+class AuthPayload(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=8)
+    username: Optional[str] = Field(default=None, min_length=2, max_length=32)
+
+class RefreshPayload(BaseModel):
+    refresh_token: str
+
+class RecoveryPayload(BaseModel):
+    email: EmailStr
+
+class RecoveryVerifyPayload(BaseModel):
+    email: EmailStr
+    code: str = Field(min_length=6, max_length=6)
+    new_password: str = Field(min_length=8)
+
+class CommunityCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=48)
+    description: str = Field(default="", max_length=240)
+
+class ChannelCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=48)
+    kind: str = "text"
+
+class InviteCreate(BaseModel):
+    expires_hours: int = Field(default=72, ge=1, le=720)
+
+class ReportCreate(BaseModel):
+    target_user_id: str
+    reason: str = Field(min_length=3, max_length=500)
+
+class ModerationAction(BaseModel):
+    action: str
+    reason: str = Field(default="", max_length=300)
+
+class RoleUpdate(BaseModel):
+    role: str
+
+class StatusCheck(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    client_name: str
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class StatusCheckCreate(BaseModel):
+    client_name: str
 
 class ConnectionManager:
     def __init__(self):
-        self.rooms = {}
+        self.rooms: Dict[str, set] = {}
 
     async def connect(self, websocket: WebSocket, room: str):
         await websocket.accept()
@@ -36,87 +117,242 @@ class ConnectionManager:
     def disconnect(self, websocket: WebSocket, room: str):
         self.rooms.get(room, set()).discard(websocket)
 
-    async def broadcast(self, message: dict, room: str):
+    async def broadcast(self, payload: dict, room: str, exclude: Optional[WebSocket] = None):
         for connection in list(self.rooms.get(room, set())):
-            await connection.send_json(message)
+            if connection is exclude:
+                continue
+            try:
+                await connection.send_json(payload)
+            except Exception:
+                self.disconnect(connection, room)
 
 manager = ConnectionManager()
 
-
-# Define Models
-class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")  # Ignore MongoDB's _id field
-    
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-class StatusCheckCreate(BaseModel):
-    client_name: str
-
-# Add your routes to the router instead of directly to app
 @api_router.get("/")
 async def root():
-    return {"message": "Hello World"}
+    return {"message": "Hello World", "product": "VEXOR", "version": "0.2.0"}
+
+@api_router.post("/status", response_model=StatusCheck)
+async def create_status_check(payload: StatusCheckCreate):
+    item = StatusCheck(client_name=payload.client_name)
+    document = item.model_dump()
+    document["timestamp"] = document["timestamp"].isoformat()
+    await db.status_checks.insert_one(document)
+    return item
+
+@api_router.get("/status", response_model=List[StatusCheck])
+async def get_status_checks():
+    items = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
+    for item in items:
+        if isinstance(item.get("timestamp"), str):
+            item["timestamp"] = datetime.fromisoformat(item["timestamp"])
+    return items
+
+@api_router.post("/auth/register")
+async def register(payload: AuthPayload):
+    email = payload.email.lower()
+    if await db.users.find_one({"email": email}, {"_id": 0}):
+        raise HTTPException(status_code=409, detail="Este e-mail já está cadastrado")
+    username = payload.username or email.split("@")[0]
+    if await db.users.find_one({"username": username}, {"_id": 0}):
+        raise HTTPException(status_code=409, detail="Nome de usuário indisponível")
+    user = {"id": str(uuid.uuid4()), "email": email, "username": username, "password_hash": hash_password(payload.password), "role": "Member", "verified": False, "created_at": now()}
+    await db.users.insert_one(user)
+    community = {"id": str(uuid.uuid4()), "name": f"{username}'s Lab", "description": "Sua primeira comunidade VEXOR", "owner_id": user["id"], "created_at": now()}
+    await db.communities.insert_one(community.copy())
+    channel = {"id": str(uuid.uuid4()), "community_id": community["id"], "name": "general", "kind": "text", "created_at": now()}
+    await db.channels.insert_one(channel.copy())
+    await db.community_members.insert_one({"community_id": community["id"], "user_id": user["id"], "role": "Owner", "joined_at": now()})
+    return await issue_tokens(user)
+
+async def issue_tokens(user: Dict[str, Any]):
+    refresh_jti = str(uuid.uuid4())
+    refresh = sign_token(user["id"], "refresh", timedelta(days=REFRESH_DAYS), refresh_jti)
+    await db.sessions.insert_one({"id": refresh_jti, "user_id": user["id"], "token_hash": hashlib.sha256(refresh.encode()).hexdigest(), "expires_at": (datetime.now(timezone.utc) + timedelta(days=REFRESH_DAYS)).isoformat(), "revoked": False})
+    return {"access_token": sign_token(user["id"], "access", timedelta(minutes=ACCESS_MINUTES)), "refresh_token": refresh, "user": public_user(user)}
+
+@api_router.post("/auth/login")
+async def login(payload: AuthPayload):
+    user = await db.users.find_one({"email": payload.email.lower()}, {"_id": 0})
+    if not user or not check_password(payload.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="E-mail ou senha inválidos")
+    return await issue_tokens(user)
+
+@api_router.post("/auth/refresh")
+async def refresh(payload: RefreshPayload):
+    try:
+        data = jwt.decode(payload.refresh_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if data.get("type") != "refresh":
+            raise ValueError()
+    except (jwt.PyJWTError, ValueError):
+        raise HTTPException(status_code=401, detail="Refresh token inválido")
+    session = await db.sessions.find_one({"id": data["jti"], "revoked": False}, {"_id": 0})
+    if not session or session["token_hash"] != hashlib.sha256(payload.refresh_token.encode()).hexdigest():
+        raise HTTPException(status_code=401, detail="Sessão revogada")
+    user = await db.users.find_one({"id": data["sub"]}, {"_id": 0})
+    await db.sessions.update_one({"id": data["jti"]}, {"$set": {"revoked": True}})
+    return await issue_tokens(user)
+
+@api_router.post("/auth/logout")
+async def logout(payload: RefreshPayload):
+    await db.sessions.update_many({"token_hash": hashlib.sha256(payload.refresh_token.encode()).hexdigest()}, {"$set": {"revoked": True}})
+    return {"ok": True}
+
+@api_router.post("/auth/recovery/request")
+async def recovery(payload: RecoveryPayload):
+    code = str(secrets.randbelow(900000) + 100000)
+    await db.recovery_codes.update_one({"email": payload.email.lower()}, {"$set": {"email": payload.email.lower(), "code": code, "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat()}}, upsert=True)
+    return {"message": "Código gerado para demonstração", "demo_code": code}
+
+@api_router.post("/auth/recovery/verify")
+async def verify_recovery(payload: RecoveryVerifyPayload):
+    record = await db.recovery_codes.find_one({"email": payload.email.lower(), "code": payload.code}, {"_id": 0})
+    if not record or datetime.fromisoformat(record["expires_at"]) < datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="Código inválido ou expirado")
+    result = await db.users.update_one({"email": payload.email.lower()}, {"$set": {"password_hash": hash_password(payload.new_password)}})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+    await db.recovery_codes.delete_one({"email": payload.email.lower()})
+    await db.sessions.update_many({"user_id": (await db.users.find_one({"email": payload.email.lower()}, {"_id": 0}))["id"]}, {"$set": {"revoked": True}})
+    return {"ok": True, "message": "Senha atualizada. Faça login novamente."}
+
+@api_router.get("/auth/me")
+async def me(user: Dict[str, Any] = Depends(current_user)):
+    return public_user(user)
+
+@api_router.get("/communities")
+async def list_communities(user: Dict[str, Any] = Depends(current_user)):
+    memberships = await db.community_members.find({"user_id": user["id"]}, {"_id": 0}).to_list(1000)
+    ids = [item["community_id"] for item in memberships]
+    return await db.communities.find({"id": {"$in": ids}}, {"_id": 0}).to_list(1000)
+
+@api_router.post("/communities")
+async def create_community(payload: CommunityCreate, user: Dict[str, Any] = Depends(current_user)):
+    community = {"id": str(uuid.uuid4()), **payload.model_dump(), "owner_id": user["id"], "created_at": now()}
+    await db.communities.insert_one(community.copy())
+    await db.community_members.insert_one({"community_id": community["id"], "user_id": user["id"], "role": "Owner", "joined_at": now()})
+    await write_audit(user, community["id"], "community.created", user["id"], payload.name)
+    return community
+
+@api_router.get("/communities/{community_id}/channels")
+async def list_channels(community_id: str, user: Dict[str, Any] = Depends(current_user)):
+    await require_member(community_id, user["id"])
+    return await db.channels.find({"community_id": community_id}, {"_id": 0}).to_list(1000)
+
+@api_router.post("/communities/{community_id}/channels")
+async def create_channel(community_id: str, payload: ChannelCreate, user: Dict[str, Any] = Depends(current_user)):
+    membership = await require_member(community_id, user["id"])
+    if membership["role"] not in ("Owner", "Admin"):
+        raise HTTPException(status_code=403, detail="Sem permissão para criar canais")
+    channel = {"id": str(uuid.uuid4()), "community_id": community_id, **payload.model_dump(), "created_at": now()}
+    await db.channels.insert_one(channel.copy())
+    await write_audit(user, community_id, "channel.created", user["id"], payload.name)
+    return channel
+
+@api_router.get("/channels/{channel_id}/messages")
+async def list_messages(channel_id: str, user: Dict[str, Any] = Depends(current_user)):
+    channel = await db.channels.find_one({"id": channel_id}, {"_id": 0})
+    if not channel:
+        raise HTTPException(status_code=404, detail="Canal não encontrado")
+    await require_member(channel["community_id"], user["id"])
+    return await db.messages.find({"channel_id": channel_id}, {"_id": 0}).sort("created_at", 1).to_list(1000)
+
+@api_router.post("/communities/{community_id}/invites")
+async def create_invite(community_id: str, payload: InviteCreate, user: Dict[str, Any] = Depends(current_user)):
+    await require_member(community_id, user["id"])
+    invite = {"id": secrets.token_urlsafe(8), "community_id": community_id, "created_by": user["id"], "expires_at": (datetime.now(timezone.utc) + timedelta(hours=payload.expires_hours)).isoformat(), "created_at": now()}
+    await db.invites.insert_one(invite.copy())
+    return invite
+
+@api_router.post("/communities/{community_id}/reports")
+async def report_user(community_id: str, payload: ReportCreate, user: Dict[str, Any] = Depends(current_user)):
+    await require_member(community_id, user["id"])
+    report = {"id": str(uuid.uuid4()), "community_id": community_id, "reporter_id": user["id"], **payload.model_dump(), "status": "open", "created_at": now()}
+    await db.reports.insert_one(report.copy())
+    await write_audit(user, community_id, "user.reported", payload.target_user_id, payload.reason)
+    return report
+
+@api_router.post("/users/{target_user_id}/block")
+async def block_user(target_user_id: str, user: Dict[str, Any] = Depends(current_user)):
+    await db.blocks.update_one({"user_id": user["id"], "blocked_user_id": target_user_id}, {"$set": {"user_id": user["id"], "blocked_user_id": target_user_id, "created_at": now()}}, upsert=True)
+    return {"ok": True}
+
+@api_router.post("/communities/{community_id}/members/{target_user_id}/moderate")
+async def moderate(community_id: str, target_user_id: str, payload: ModerationAction, user: Dict[str, Any] = Depends(current_user)):
+    membership = await require_member(community_id, user["id"])
+    if membership["role"] not in ("Owner", "Admin", "Moderator"):
+        raise HTTPException(status_code=403, detail="Sem permissão de moderação")
+    if payload.action not in ("kick", "ban", "unban"):
+        raise HTTPException(status_code=400, detail="Ação inválida")
+    if payload.action == "ban":
+        await db.bans.update_one({"community_id": community_id, "user_id": target_user_id}, {"$set": {"community_id": community_id, "user_id": target_user_id, "reason": payload.reason, "created_at": now()}}, upsert=True)
+    elif payload.action == "kick":
+        await db.community_members.delete_one({"community_id": community_id, "user_id": target_user_id})
+    else:
+        await db.bans.delete_one({"community_id": community_id, "user_id": target_user_id})
+    await write_audit(user, community_id, f"member.{payload.action}", target_user_id, payload.reason)
+    return {"ok": True, "action": payload.action}
+
+@api_router.patch("/communities/{community_id}/members/{target_user_id}/role")
+async def update_role(community_id: str, target_user_id: str, payload: RoleUpdate, user: Dict[str, Any] = Depends(current_user)):
+    membership = await require_member(community_id, user["id"])
+    if membership["role"] != "Owner" or payload.role not in ("Admin", "Moderator", "Member"):
+        raise HTTPException(status_code=403, detail="Apenas o Owner pode alterar este cargo")
+    await db.community_members.update_one({"community_id": community_id, "user_id": target_user_id}, {"$set": {"role": payload.role}})
+    await write_audit(user, community_id, "member.role_updated", target_user_id, payload.role)
+    return {"ok": True, "role": payload.role}
+
+@api_router.get("/communities/{community_id}/audit-log")
+async def audit_log(community_id: str, user: Dict[str, Any] = Depends(current_user)):
+    membership = await require_member(community_id, user["id"])
+    if membership["role"] not in ("Owner", "Admin", "Moderator"):
+        raise HTTPException(status_code=403, detail="Sem acesso ao audit log")
+    return await db.audit_logs.find({"community_id": community_id}, {"_id": 0}).sort("created_at", -1).to_list(500)
+
+async def require_member(community_id: str, user_id: str):
+    membership = await db.community_members.find_one({"community_id": community_id, "user_id": user_id}, {"_id": 0})
+    if not membership:
+        raise HTTPException(status_code=403, detail="Você não faz parte desta comunidade")
+    banned = await db.bans.find_one({"community_id": community_id, "user_id": user_id}, {"_id": 0})
+    if banned:
+        raise HTTPException(status_code=403, detail="Você foi banido desta comunidade")
+    return membership
+
+async def write_audit(user: Dict[str, Any], community_id: str, action: str, target: str, reason: str):
+    await db.audit_logs.insert_one({"id": str(uuid.uuid4()), "community_id": community_id, "actor_id": user["id"], "action": action, "target_id": target, "reason": reason, "created_at": now()})
 
 @app.websocket("/api/ws/{room}")
-async def websocket_room(websocket: WebSocket, room: str):
+async def websocket_room(websocket: WebSocket, room: str, token: Optional[str] = Query(default=None)):
+    user = None
+    if token:
+        try:
+            payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+            if payload.get("type") == "access":
+                user = await db.users.find_one({"id": payload["sub"]}, {"_id": 0})
+        except jwt.PyJWTError:
+            user = None
+    if not user:
+        await websocket.close(code=1008, reason="Autenticação necessária")
+        return
     await manager.connect(websocket, room)
-    await manager.broadcast({"type": "presence", "room": room, "status": "connected"}, room)
+    await manager.broadcast({"type": "presence", "room": room, "status": "connected", "user_id": user["id"] if user else None}, room)
     try:
         while True:
             payload = await websocket.receive_json()
             if payload.get("type") == "message" and payload.get("text", "").strip():
-                await manager.broadcast({
-                    "type": "message",
-                    "room": room,
-                    "text": payload["text"].strip(),
-                    "author": payload.get("author", "Você"),
-                }, room)
+                message = {"id": str(uuid.uuid4()), "channel_id": room, "author_id": user["id"] if user else "anonymous", "author": user["username"] if user else payload.get("author", "Você"), "text": payload["text"].strip(), "created_at": now()}
+                await db.messages.insert_one(message.copy())
+                await manager.broadcast({"type": "message", **message}, room)
+            elif payload.get("type") in ("voice-join", "voice-offer", "voice-answer", "voice-ice"):
+                signal = {"type": "voice-peer-joined" if payload["type"] == "voice-join" else payload["type"], "peer_id": payload.get("peer_id"), "target_id": payload.get("target_id"), "description": payload.get("description"), "candidate": payload.get("candidate")}
+                await manager.broadcast(signal, room, exclude=websocket)
     except WebSocketDisconnect:
         manager.disconnect(websocket, room)
-        await manager.broadcast({"type": "presence", "room": room, "status": "disconnected"}, room)
+        await manager.broadcast({"type": "presence", "room": room, "status": "disconnected", "user_id": user["id"] if user else None}, room)
 
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.model_dump()
-    status_obj = StatusCheck(**status_dict)
-    
-    # Convert to dict and serialize datetime to ISO string for MongoDB
-    doc = status_obj.model_dump()
-    doc['timestamp'] = doc['timestamp'].isoformat()
-    
-    _ = await db.status_checks.insert_one(doc)
-    return status_obj
-
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    # Exclude MongoDB's _id field from the query results
-    status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
-    
-    # Convert ISO string timestamps back to datetime objects
-    for check in status_checks:
-        if isinstance(check['timestamp'], str):
-            check['timestamp'] = datetime.fromisoformat(check['timestamp'])
-    
-    return status_checks
-
-# Include the router in the main app
 app.include_router(api_router)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+app.add_middleware(CORSMiddleware, allow_credentials=True, allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","), allow_methods=["*"], allow_headers=["*"])
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 @app.on_event("shutdown")

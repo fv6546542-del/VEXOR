@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="2" skipped="0" tests="2" time="1.486" timestamp="2026-08-21T08:55:54.909220+00:00" hostname="agent-env-1a6cd0a8-85a1-49d7-a8e9-2f37a927c35d"><testcase classname="tests.test_auth_workspace_regression" name="test_auth_session_and_workspace_persistence" time="0.532"><failure message="assert (500 == 200)&#10; +  where 500 = &lt;Response [500]&gt;.status_code">backend/tests/test_auth_workspace_regression.py:29: in test_auth_session_and_workspace_persistence
+    assert created.status_code == 200 and created.json()["name"].startswith("TEST Community")
+E   assert (500 == 200)
+E    +  where 500 = &lt;Response [500]&gt;.status_code</failure></testcase><testcase classname="tests.test_auth_workspace_regression" name="test_recovery_demo_code_is_usable_or_has_verification_endpoint" time="0.305"><failure message="AssertionError: Recovery code is generated but no verification endpoint exists&#10;assert 404 != 404&#10; +  where 404 = &lt;Response [404]&gt;.status_code">backend/tests/test_auth_workspace_regression.py:61: in test_recovery_demo_code_is_usable_or_has_verification_endpoint
+    assert verify.status_code != 404, "Recovery code is generated but no verification endpoint exists"
+E   AssertionError: Recovery code is generated but no verification endpoint exists
+E   assert 404 != 404
+E    +  where 404 = &lt;Response [404]&gt;.status_code</failure></testcase></testsuite></testsuites>

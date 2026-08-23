@@ -22,16 +22,23 @@ Criar a VEXOR, uma plataforma própria de comunicação em tempo real para comun
 - Menu mobile e layout sem overflow horizontal.
 - `data-testid` em elementos críticos e interativos.
 
+## Implementado na evolução de autenticação e operação
+- Cadastro e login reais com bcrypt, JWT de acesso, refresh token rotativo, logout e sessão persistida no navegador.
+- Recuperação de senha por código de demonstração com verificação, troca de senha e revogação das sessões anteriores.
+- Comunidades e canais persistentes, histórico de mensagens via WebSocket e carregamento do workspace autenticado.
+- Criação de comunidades/canais, convites, denúncias e audit log por painéis do workspace.
+- Papéis e autorização backend para Owner/Admin/Moderator/Member, bloqueio, banimento e expulsão.
+- WebSocket exige access token válido; sinalização P2P para voz, microfone com cancelamento de eco, mute, entrada e saída.
+- Rotação de refresh tokens e respostas sanitizadas para impedir vazamento de `_id` do MongoDB.
+
 ## Backlog priorizado
 ### P0
-- Implementar autenticação real com hash de senha, sessão persistente, refresh token e recuperação de senha.
-- Persistir usuários, comunidades, canais e mensagens no MongoDB com autorização backend.
 - Integrar presença persistente e reconexão com recuperação de histórico.
 
 ### P1
-- Amigos, DMs, convites e notificações.
-- Cargos, permissões, regras e moderação com audit log.
-- Sinalização WebRTC e sala de voz real com microfone.
+- Amigos, DMs e notificações.
+- Regras da comunidade e moderador global.
+- Áudio remoto WebRTC com gerenciamento de trilhas e indicador de fala por participante.
 
 ### P2
 - Compartilhamento de tela via WebRTC e áudio do sistema quando permitido.
