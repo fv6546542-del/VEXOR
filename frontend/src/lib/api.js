@@ -6,7 +6,14 @@ export const api = async (path, options = {}) => {
   if (token) headers.Authorization = `Bearer ${token}`;
   const response = await fetch(`${API_URL}/api${path}`, { ...options, headers });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.detail || "Não foi possível completar a operação");
+  if (!response.ok) {
+    const detail = body.detail;
+    let message = "Não foi possível completar a operação";
+    if (typeof detail === "string") message = detail;
+    else if (Array.isArray(detail)) message = detail.map((d) => d.msg || d.message || JSON.stringify(d)).join(" · ");
+    else if (detail && typeof detail === "object") message = detail.msg || JSON.stringify(detail);
+    throw new Error(message);
+  }
   return body;
 };
 

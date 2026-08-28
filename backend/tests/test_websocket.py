@@ -9,7 +9,9 @@ from websockets.sync.client import connect
 from websockets.exceptions import InvalidStatus
 
 
-BASE_URL = os.environ.get("REACT_APP_BACKEND_URL")
+from dotenv import dotenv_values
+
+BASE_URL = os.environ.get("REACT_APP_BACKEND_URL") or dotenv_values("/app/frontend/.env").get("REACT_APP_BACKEND_URL")
 if not BASE_URL:
     pytest.skip("REACT_APP_BACKEND_URL is required", allow_module_level=True)
 WS_BASE_URL = BASE_URL.rstrip("/").replace("https://", "wss://").replace("http://", "ws://")

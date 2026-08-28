@@ -3,9 +3,14 @@ import os
 import uuid
 
 import requests
+from dotenv import dotenv_values
 
 
-BASE_URL = os.environ["REACT_APP_BACKEND_URL"].rstrip("/")
+_env = dotenv_values("/app/frontend/.env")
+_base = os.environ.get("REACT_APP_BACKEND_URL") or _env.get("REACT_APP_BACKEND_URL")
+if not _base:
+    raise RuntimeError("REACT_APP_BACKEND_URL missing from env and /app/frontend/.env")
+BASE_URL = _base.rstrip("/")
 
 
 def register(suffix: str):

@@ -1,46 +1,61 @@
 # VEXOR — Product Requirements Document
 
 ## Problema original
-Criar a VEXOR, uma plataforma própria de comunicação em tempo real para comunidades, canais, mensagens, presença, chamadas de voz e compartilhamento de tela, com identidade Dark Tech profissional, interface responsiva e arquitetura preparada para evolução.
+Plataforma própria de comunicação em tempo real (comunidades, canais, chat, voz, tela, amigos, DMs, moderação) com identidade Dark Tech vermelha, monetização por assinatura e integração social. Não recriar do zero — evoluir o MVP existente sem apagar dados.
 
-## Decisões de arquitetura
-- Preservar o starter React + FastAPI + MongoDB existente no workspace.
-- Implementar a primeira experiência em React com componentes de workspace próprios, CSS modular e lucide-react.
-- Implementar WebSocket por canal em FastAPI (`/api/ws/{room}`), com presença e broadcast de mensagens.
-- Manter voz, microfone, WebRTC e compartilhamento de tela como entry points visuais explícitos para a próxima fase, sem simular uma chamada conectada.
-- Usar a direção visual “Signal Room”: superfícies sólidas, laranja como sinal primário, tipografia Barlow Condensed + IBM Plex e grid de command center.
+## Stack (fixado)
+- **Frontend:** React + Tailwind base + CSS modular · fontes Chakra Petch + Space Grotesk + JetBrains Mono
+- **Backend:** FastAPI + Motor (MongoDB) + JWT + bcrypt
+- **Realtime:** WebSocket (chat + signalling) · WebRTC P2P mesh (voz + tela + áudio do sistema)
+- **Pagamentos:** Stripe (Flow A — claimable sandbox `acct_1U9GIuAMeKVSN4ut`, país BR, `diy` tax mode)
+- **Auth alternativa:** Google OAuth (pendente — aguardando credenciais do usuário)
 
-## Implementado nesta fase
-- Landing page VEXOR com slogan, CTA, navegação e visual de produto.
-- Fluxo de entrada e cadastro/login visual por e-mail/senha, com Google reservado como “Em breve”.
-- Workspace responsivo com community rail, channel rail, thread central e presença.
-- Troca entre comunidades e canais.
-- Composer de mensagens com envio por WebSocket e fallback de disponibilidade.
-- Estado visível Conectado/Offline e correção de lifecycle sob React StrictMode.
-- Broadcast WebSocket entre clientes no mesmo canal.
-- Lista de membros/status e card de voz/tela preparado para próxima fase.
-- Menu mobile e layout sem overflow horizontal.
-- `data-testid` em elementos críticos e interativos.
+## Identidade visual
+- Paleta Dark Tech: `--red #ff2b3a`, `--red-hot #ff5c68`, `--bg #0a0a0c`, `--surface #141419`, `--graphite #17171c`
+- Logo VEXOR: V estilizado em vermelho com clip-path triangular e glow
+- Slogan: **CONNECT · TALK · SHARE**
 
-## Implementado na evolução de autenticação e operação
-- Cadastro e login reais com bcrypt, JWT de acesso, refresh token rotativo, logout e sessão persistida no navegador.
-- Recuperação de senha por código de demonstração com verificação, troca de senha e revogação das sessões anteriores.
-- Comunidades e canais persistentes, histórico de mensagens via WebSocket e carregamento do workspace autenticado.
-- Criação de comunidades/canais, convites, denúncias e audit log por painéis do workspace.
-- Papéis e autorização backend para Owner/Admin/Moderator/Member, bloqueio, banimento e expulsão.
-- WebSocket exige access token válido; sinalização P2P para voz, microfone com cancelamento de eco, mute, entrada e saída.
-- Rotação de refresh tokens e respostas sanitizadas para impedir vazamento de `_id` do MongoDB.
+## Implementado
+### MVP anterior (preservado)
+- Auth JWT + refresh + recovery + logout
+- Comunidades, canais, mensagens, WebSocket broadcast
+- WebRTC voz P2P (mute, active speaker) + compartilhamento de tela + áudio do sistema
+- Amigos, DMs, regras, aceite de regras, moderação (ban/kick/unban), audit log, denúncias, bloqueios
+
+### Iteração atual — Evolução
+- ✅ **Identidade Dark Tech** — novo App.css + landing renovada com hero, feature strip e waveform animado
+- ✅ **Pricing page** (`/pricing`) com 3 tiers: FREE (R$0/50 comunidades), PULSE (R$14,99/150/1080p), IGNITE (R$39,99/300/4K)
+- ✅ **Stripe billing** — Flow A sandbox, checkout com `subscription_data.trial_period_days=30`, webhook `/api/stripe/webhook`, billing portal, status polling, catálogo idempotente (`setup_stripe.py`)
+- ✅ **Perfil enriquecido** — bio, activity/jogo, avatar_url, banner_url via `PATCH /api/users/me`
+- ✅ **Tier enforcement** — `create_community` checa `community_limit` e retorna 402
+- ✅ **Settings panel** com abas Perfil e Plano (gerenciar assinatura via portal Stripe)
+- ✅ **Tier badges** — PULSE (rosa) e IGNITE (dourado) exibidos no user-dock e perfil
+- ✅ **Mobile refinado** — channel-rail agora abre como drawer via botão Hash na topbar; settings acessível via ícone Settings; composer sem overlays
+- ✅ Bug fixes iteração 7→8: global-tools overlay removido, /payment/cancel dedicado, billing/status agora auth+owner, webhook trata JSON inválido, refresh guard user None
+
+## Backend endpoints novos
+- `GET /api/billing/tiers` · `GET /api/billing/me` · `POST /api/billing/checkout`
+- `GET /api/billing/status/{session_id}` (auth + owner) · `POST /api/billing/portal`
+- `POST /api/stripe/webhook` (signature verify + ValueError tolerant)
+- `PATCH /api/users/me`
+- `TIERS` dict com `community_limit`, `max_video`, `badge`, `lookup_key`
+
+## Testes
+- **38/38 pytest passing** (iteration_8.json)
+- Suites: `test_billing_profile.py`, `test_iteration8_fixes.py`, `test_auth_workspace_regression.py`, `test_social_rules_regression.py`, `test_websocket.py`
+- Frontend E2E: landing, pricing, register→workspace, settings profile save, /payment/cancel, mobile 390px
 
 ## Backlog priorizado
 ### P0
-- Integrar presença persistente e reconexão com recuperação de histórico.
+- **Google OAuth** — aguardando GOOGLE_CLIENT_ID e GOOGLE_CLIENT_SECRET do usuário
+- **Mascote VEXOR** — gerar via Gemini Nano Banana para loaders e estados vazios (Fase D)
 
 ### P1
-- Amigos, DMs e notificações.
-- Regras da comunidade e moderador global.
-- Áudio remoto WebRTC com gerenciamento de trilhas e indicador de fala por participante.
+- Splittar `App.js` (762 linhas) em `components/` (Landing, Pricing, Auth, Workspace, Voice, Settings)
+- Client-side router (deep link em `/pricing`)
+- Bordas de avatar animadas para PULSE/IGNITE
+- Cap real de resolução WebRTC pelo tier (720p/1080p/4K)
+- Presença persistente + reconnect com histórico
 
 ### P2
-- Compartilhamento de tela via WebRTC e áudio do sistema quando permitido.
-- Uploads, reações, threads e busca.
-- Cliente mobile e painel administrativo global.
+- Cliente mobile nativo, dashboard administrativo global, uploads, threads, busca

@@ -9,8 +9,9 @@ import uuid
 
 import bcrypt
 import jwt
+import stripe
 from dotenv import load_dotenv
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
@@ -29,11 +30,40 @@ JWT_ALGORITHM = "HS256"
 ACCESS_MINUTES = 30
 REFRESH_DAYS = 14
 
+stripe.api_key = os.environ.get("STRIPE_SECRET_KEY", "")
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+STRIPE_PUBLISHABLE_KEY = os.environ.get("STRIPE_PUBLISHABLE_KEY", "")
+
+TIERS = {
+    "free": {"id": "free", "name": "VEXOR Free", "price": 0, "community_limit": 50, "max_video": "720p", "badge": None, "lookup_key": None},
+    "pulse": {"id": "pulse", "name": "VEXOR Pulse", "price": 14.99, "community_limit": 150, "max_video": "1080p", "badge": "pulse", "lookup_key": "vexor_pulse_monthly"},
+    "ignite": {"id": "ignite", "name": "VEXOR Ignite", "price": 39.99, "community_limit": 300, "max_video": "4k", "badge": "ignite", "lookup_key": "vexor_ignite_monthly"},
+}
+
 def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 def public_user(user: Dict[str, Any]) -> Dict[str, Any]:
-    return {"id": user["id"], "email": user["email"], "username": user["username"], "role": user.get("role", "Member"), "verified": user.get("verified", False)}
+    tier_id = user.get("tier", "free")
+    tier = TIERS.get(tier_id, TIERS["free"])
+    return {
+        "id": user["id"],
+        "email": user["email"],
+        "username": user["username"],
+        "role": user.get("role", "Member"),
+        "verified": user.get("verified", False),
+        "avatar_url": user.get("avatar_url"),
+        "banner_url": user.get("banner_url"),
+        "bio": user.get("bio", ""),
+        "activity": user.get("activity", ""),
+        "tier": tier_id,
+        "tier_name": tier["name"],
+        "community_limit": tier["community_limit"],
+        "badge": tier["badge"],
+        "trial_ends_at": user.get("trial_ends_at"),
+        "subscription_status": user.get("subscription_status", "none"),
+        "auth_provider": user.get("auth_provider", "password"),
+    }
 
 def hash_password(value: str) -> str:
     return bcrypt.hashpw(value.encode(), bcrypt.gensalt()).decode()
@@ -105,6 +135,17 @@ class FriendAction(BaseModel):
 
 class RulesPayload(BaseModel):
     rules: List[str] = Field(min_length=1, max_length=30)
+
+class ProfileUpdate(BaseModel):
+    username: Optional[str] = Field(default=None, min_length=2, max_length=32)
+    bio: Optional[str] = Field(default=None, max_length=280)
+    activity: Optional[str] = Field(default=None, max_length=80)
+    avatar_url: Optional[str] = Field(default=None, max_length=600)
+    banner_url: Optional[str] = Field(default=None, max_length=600)
+
+class CheckoutRequest(BaseModel):
+    lookup_key: str
+    origin_url: str
 
 class StatusCheck(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -199,6 +240,8 @@ async def refresh(payload: RefreshPayload):
     if not session or session["token_hash"] != hashlib.sha256(payload.refresh_token.encode()).hexdigest():
         raise HTTPException(status_code=401, detail="Sessão revogada")
     user = await db.users.find_one({"id": data["sub"]}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=401, detail="Usuário não encontrado")
     await db.sessions.update_one({"id": data["jti"]}, {"$set": {"revoked": True}})
     return await issue_tokens(user)
 
@@ -291,6 +334,10 @@ async def list_communities(user: Dict[str, Any] = Depends(current_user)):
 
 @api_router.post("/communities")
 async def create_community(payload: CommunityCreate, user: Dict[str, Any] = Depends(current_user)):
+    tier = TIERS.get(user.get("tier", "free"), TIERS["free"])
+    owned = await db.communities.count_documents({"owner_id": user["id"]})
+    if owned >= tier["community_limit"]:
+        raise HTTPException(status_code=402, detail=f"Você atingiu o limite de {tier['community_limit']} comunidades do plano {tier['name']}. Faça upgrade para criar mais.")
     community = {"id": str(uuid.uuid4()), **payload.model_dump(), "owner_id": user["id"], "created_at": now()}
     await db.communities.insert_one(community.copy())
     await db.community_members.insert_one({"community_id": community["id"], "user_id": user["id"], "role": "Owner", "joined_at": now()})
@@ -419,6 +466,169 @@ async def require_member(community_id: str, user_id: str, enforce_rules: bool = 
 
 async def write_audit(user: Dict[str, Any], community_id: str, action: str, target: str, reason: str):
     await db.audit_logs.insert_one({"id": str(uuid.uuid4()), "community_id": community_id, "actor_id": user["id"], "action": action, "target_id": target, "reason": reason, "created_at": now()})
+
+@api_router.patch("/users/me")
+async def update_profile(payload: ProfileUpdate, user: Dict[str, Any] = Depends(current_user)):
+    updates = {k: v for k, v in payload.model_dump(exclude_none=True).items()}
+    if "username" in updates and updates["username"] != user["username"]:
+        clash = await db.users.find_one({"username": updates["username"], "id": {"$ne": user["id"]}}, {"_id": 0})
+        if clash:
+            raise HTTPException(status_code=409, detail="Nome de usuário indisponível")
+    if updates:
+        await db.users.update_one({"id": user["id"]}, {"$set": updates})
+    fresh = await db.users.find_one({"id": user["id"]}, {"_id": 0})
+    return public_user(fresh)
+
+@api_router.get("/billing/tiers")
+async def list_tiers():
+    return {
+        "publishable_key": STRIPE_PUBLISHABLE_KEY,
+        "tiers": [
+            {**TIERS["free"], "features": ["Até 50 comunidades", "Voz + tela WebRTC 720p", "Chat em tempo real", "Amigos e DMs"]},
+            {**TIERS["pulse"], "features": ["Até 150 comunidades", "Transmissão 1080p", "Trial de 30 dias", "Badge Pulse animado", "Bordas de avatar exclusivas"]},
+            {**TIERS["ignite"], "features": ["Até 300 comunidades", "Transmissão 2K/4K", "Trial de 30 dias", "Badge Ignite premium", "Perfil com banner animado", "Suporte prioritário"]},
+        ],
+    }
+
+@api_router.get("/billing/me")
+async def my_billing(user: Dict[str, Any] = Depends(current_user)):
+    return {
+        "tier": user.get("tier", "free"),
+        "subscription_status": user.get("subscription_status", "none"),
+        "trial_ends_at": user.get("trial_ends_at"),
+        "current_period_end": user.get("current_period_end"),
+        "stripe_customer_id": user.get("stripe_customer_id"),
+    }
+
+@api_router.post("/billing/checkout")
+async def create_checkout(payload: CheckoutRequest, user: Dict[str, Any] = Depends(current_user)):
+    if not stripe.api_key:
+        raise HTTPException(status_code=503, detail="Faturamento indisponível")
+    tier = next((tier for tier in TIERS.values() if tier["lookup_key"] == payload.lookup_key), None)
+    if not tier:
+        raise HTTPException(status_code=400, detail="Plano inválido")
+    prices = stripe.Price.list(lookup_keys=[payload.lookup_key], active=True, limit=1).data
+    if not prices:
+        raise HTTPException(status_code=500, detail=f"Preço não encontrado: {payload.lookup_key}")
+    price = prices[0]
+    customer_id = user.get("stripe_customer_id")
+    if not customer_id:
+        customer = stripe.Customer.create(email=user["email"], name=user["username"], metadata={"vexor_user_id": user["id"]})
+        customer_id = customer.id
+        await db.users.update_one({"id": user["id"]}, {"$set": {"stripe_customer_id": customer_id}})
+    already_trialed = user.get("trial_used", False)
+    subscription_data = {"metadata": {"vexor_user_id": user["id"], "tier": tier["id"]}}
+    if not already_trialed:
+        subscription_data["trial_period_days"] = 30
+    session = stripe.checkout.Session.create(
+        customer=customer_id,
+        line_items=[{"price": price.id, "quantity": 1}],
+        mode="subscription",
+        success_url=f"{payload.origin_url}/payment/success?session_id={{CHECKOUT_SESSION_ID}}",
+        cancel_url=f"{payload.origin_url}/payment/cancel",
+        subscription_data=subscription_data,
+        metadata={"vexor_user_id": user["id"], "tier": tier["id"], "lookup_key": payload.lookup_key},
+    )
+    await db.payment_transactions.insert_one({
+        "session_id": session.id,
+        "user_id": user["id"],
+        "lookup_key": payload.lookup_key,
+        "tier": tier["id"],
+        "amount": (price.unit_amount or 0),
+        "currency": price.currency,
+        "status": "initiated",
+        "payment_status": "pending",
+        "created_at": now(),
+        "updated_at": now(),
+    })
+    return {"checkout_url": session.url, "session_id": session.id}
+
+@api_router.get("/billing/status/{session_id}")
+async def billing_status(session_id: str, user: Dict[str, Any] = Depends(current_user)):
+    record = await db.payment_transactions.find_one({"session_id": session_id, "user_id": user["id"]}, {"_id": 0})
+    if not record:
+        raise HTTPException(status_code=404, detail="Transação não encontrada")
+    if record.get("payment_status") != "paid":
+        try:
+            s = stripe.checkout.Session.retrieve(session_id)
+            if s.payment_status == "paid" or s.status == "complete":
+                await _apply_paid_session(s)
+                record = await db.payment_transactions.find_one({"session_id": session_id, "user_id": user["id"]}, {"_id": 0})
+        except stripe.error.StripeError:
+            pass
+    return {"session_id": record["session_id"], "status": record["status"], "payment_status": record["payment_status"], "tier": record.get("tier")}
+
+@api_router.post("/billing/portal")
+async def billing_portal(user: Dict[str, Any] = Depends(current_user)):
+    customer_id = user.get("stripe_customer_id")
+    if not customer_id:
+        raise HTTPException(status_code=400, detail="Nenhuma assinatura ativa")
+    session = stripe.billing_portal.Session.create(customer=customer_id, return_url=os.environ.get("PORTAL_RETURN_URL", "https://vexor-dev.preview.emergentagent.com"))
+    return {"url": session.url}
+
+async def _apply_paid_session(session_obj: Any) -> None:
+    sess = session_obj if isinstance(session_obj, dict) else session_obj.to_dict()
+    metadata = sess.get("metadata") or {}
+    user_id = metadata.get("vexor_user_id")
+    tier_id = metadata.get("tier", "pulse")
+    subscription_id = sess.get("subscription")
+    current_period_end = None
+    trial_end = None
+    if subscription_id:
+        try:
+            sub = stripe.Subscription.retrieve(subscription_id)
+            current_period_end = datetime.fromtimestamp(sub["current_period_end"], tz=timezone.utc).isoformat() if sub.get("current_period_end") else None
+            trial_end = datetime.fromtimestamp(sub["trial_end"], tz=timezone.utc).isoformat() if sub.get("trial_end") else None
+        except stripe.error.StripeError:
+            pass
+    await db.payment_transactions.update_one(
+        {"session_id": sess["id"], "payment_status": {"$ne": "paid"}},
+        {"$set": {
+            "status": "completed",
+            "payment_status": sess.get("payment_status", "paid"),
+            "stripe_subscription_id": subscription_id,
+            "updated_at": now(),
+        }},
+    )
+    if user_id:
+        await db.users.update_one({"id": user_id}, {"$set": {
+            "tier": tier_id,
+            "subscription_status": "trialing" if trial_end else "active",
+            "stripe_subscription_id": subscription_id,
+            "current_period_end": current_period_end,
+            "trial_ends_at": trial_end,
+            "trial_used": True,
+        }})
+
+@api_router.post("/stripe/webhook")
+async def stripe_webhook(request: Request):
+    payload = await request.body()
+    sig = request.headers.get("stripe-signature", "")
+    try:
+        event = stripe.Webhook.construct_event(payload, sig, STRIPE_WEBHOOK_SECRET)
+    except (stripe.error.SignatureVerificationError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid signature")
+    obj, t = event["data"]["object"], event["type"]
+    if t == "checkout.session.completed":
+        await _apply_paid_session(obj)
+    elif t == "customer.subscription.updated":
+        customer_id = obj.get("customer")
+        sub_status = obj.get("status")
+        tier_id = (obj.get("metadata") or {}).get("tier") or "free"
+        current_period_end = datetime.fromtimestamp(obj["current_period_end"], tz=timezone.utc).isoformat() if obj.get("current_period_end") else None
+        await db.users.update_one({"stripe_customer_id": customer_id}, {"$set": {
+            "subscription_status": sub_status,
+            "current_period_end": current_period_end,
+            "tier": tier_id if sub_status in ("trialing", "active") else "free",
+        }})
+    elif t == "customer.subscription.deleted":
+        customer_id = obj.get("customer")
+        await db.users.update_one({"stripe_customer_id": customer_id}, {"$set": {"tier": "free", "subscription_status": "canceled"}})
+    elif t == "invoice.payment_failed":
+        customer_id = obj.get("customer")
+        await db.users.update_one({"stripe_customer_id": customer_id}, {"$set": {"subscription_status": "past_due"}})
+    return {"status": "ok"}
+
 
 @app.websocket("/api/ws/{room}")
 async def websocket_room(websocket: WebSocket, room: str, token: Optional[str] = Query(default=None)):

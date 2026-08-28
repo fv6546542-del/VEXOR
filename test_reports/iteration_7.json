@@ -1,0 +1,63 @@
+{
+  "summary": "Iteration 7 (Stripe billing + tiers + profile + new Dark Tech UI). Backend: created /app/backend/tests/test_billing_profile.py (20 tests) covering /api/billing/tiers, /billing/me, /billing/checkout (pulse+ignite, invalid key, unauth), /billing/status, /billing/portal, /stripe/webhook signature rejection, users/me PATCH (persistence, 409 username clash, 422 validation, 401) and regression of register/login/refresh/communities/channels/friends/DM. Full suite (26 tests incl. previous regression + WebSocket broadcast) = 100% pass. Frontend: landing, pricing (3 cards + prices), anonymous CTA -> auth, register -> workspace, real Stripe redirect (checkout.stripe.com), chat send, community creation, profile PATCH + persistence, billing tab, /payment/cancel, mobile 390x844. ONE CRITICAL UI DEFECT: the settings button in the sidebar user-dock is completely covered by the fixed .global-tools bar, so the whole Perfil/Plano settings panel is unreachable by a real user (verified with elementFromPoint + Playwright click interception; panel works fine once the bar is hidden via injected CSS in the test).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/billing/status/{session_id}", "issue": "Unauthenticated and unscoped - any caller can read any session's payment status/tier by id (no auth dependency, no user ownership check)."},
+      {"endpoint": "POST /api/stripe/webhook", "issue": "Only stripe.error.SignatureVerificationError is caught; a malformed/non-JSON body raises ValueError from construct_event and would surface as 500 instead of 400."},
+      {"endpoint": "POST /api/auth/refresh", "issue": "db.users.find_one result is used without a None check; a deleted user with a valid refresh token would raise 500 in issue_tokens."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Workspace .user-dock / GlobalTools", "issue": "CRITICAL: settings button is unclickable. .global-tools (position:fixed; bottom:22px; left:100px; z-index:15) sits exactly over the sidebar user-dock (settings button box x=291,y=1034 vs global-tools x=100,y=1022,w=372,h=36). Playwright reports 'global-rules-button intercepts pointer events'; a force click opens the 'Regras da comunidade' modal instead. document.elementFromPoint over the settings button returns global-rules-button. Result: Perfil/Plano settings panel is completely unreachable in the real UI on desktop.", "selector": "[data-testid=\"user-settings-button\"] blocked by [data-testid=\"global-tools\"]", "priority": "CRITICAL"},
+      {"component": "Workspace mobile (390x844)", "issue": "Same .global-tools bar floats over the message composer at the bottom of the mobile layout (icons overlap the 'Mensagem em #general' input), and the sidebar user-dock/settings button has a 0x0 rect (hidden), so settings are unreachable on mobile too.", "selector": "[data-testid=\"global-tools\"], [data-testid=\"message-composer-input\"]", "priority": "HIGH"},
+      {"component": "PaymentResult (/payment/cancel)", "issue": "Cancel route calls /billing/status/cancelled which 404s, so the card renders the generic error state 'Algo travou / Transação não encontrada' (with two 404 console errors) instead of a proper 'Pagamento cancelado' message.", "selector": "[data-testid=\"payment-result\"]", "priority": "MEDIUM"},
+      {"component": "SettingsPanel", "issue": "settings-result message is shared across tabs and is stale: after saving the profile, 'Perfil atualizado' remains visible while the Plano tab is open.", "selector": "[data-testid=\"settings-result\"]", "priority": "LOW"},
+      {"component": "Pricing", "issue": "For a logged-in FREE user the free card shows 'Voltar ao workspace' and no plan is marked as current (isCurrent is never applied to the free tier), so the user cannot tell which plan is active from the pricing page.", "selector": "[data-testid=\"pricing-cta-free\"]", "priority": "LOW"}
+    ],
+    "integration_issues": [
+      {"flow": "Deep links / routing", "issue": "App has no router: navigating directly to /pricing renders the workspace (or landing) and pricing/auth screen changes never update the URL. /payment/success and /payment/cancel are the only path-aware screens. Reloading or sharing /pricing does not work.", "affected_selectors": ["[data-testid=\"pricing-page\"]"]}
+    ],
+    "design_issues": [
+      {"screen": "Workspace desktop + mobile", "issues": ["Floating .global-tools bar overlaps the sidebar user dock (desktop) and the message composer (mobile) - needs repositioning or integration into the sidebar/topbar"]},
+      {"screen": "Landing / Pricing", "issues": ["No contrast or spacing problems found; Dark Tech red/black palette renders correctly, hero 'Conexões que disparam ideias.' and slogan 'CONNECT · TALK · SHARE' present, prices R$0 / R$14,99 / R$39,99 correct"]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_billing_profile.py",
+    "/app/backend/tests/test_auth_workspace_regression.py",
+    "/app/backend/tests/test_social_rules_regression.py",
+    "/app/backend/tests/test_websocket.py",
+    "/app/test_reports/pytest/iteration7_all.xml",
+    "/app/test_reports/pytest/iteration7_billing.xml"
+  ],
+  "action_items": [
+    "CRITICAL: fix the .global-tools overlay so [data-testid=\"user-settings-button\"] is clickable (e.g. move global tools into the topbar/right panel, add bottom padding to the sidebar, or lower z-index / shift left offset past the 274px sidebar). Settings (Perfil + Plano) are currently inaccessible.",
+    "Fix mobile layout: global tools bar overlaps the message composer and the settings/user dock is not reachable on 390px viewports.",
+    "Make /payment/cancel show a dedicated 'Pagamento cancelado' state instead of calling /billing/status/cancelled and rendering the error card.",
+    "Add auth + ownership check to GET /api/billing/status/{session_id} (currently public).",
+    "Catch ValueError in stripe_webhook construct_event and return 400 for malformed payloads.",
+    "Optional: add a router (or path sync) so /pricing is deep-linkable; mark the current plan on the pricing page for free users; clear settings-result when switching tabs."
+  ],
+  "critical_code_review_comments": [
+    "App.js is 762 lines with Landing/Pricing/Auth/Workspace/Settings/Voice/PaymentResult all in one file - split into components/ modules before it grows further.",
+    "No client-side router; screen state + window.location.pathname parsing makes /pricing and /payment/* fragile and breaks back/forward navigation.",
+    "/api/billing/status/{session_id} has no Depends(current_user) - payment metadata is publicly readable by session id.",
+    "auth/refresh does not guard against a missing user document before issue_tokens (potential 500).",
+    "_apply_paid_session relies on subscription.current_period_end which recent Stripe API versions moved to subscription items - verify against the pinned stripe SDK/API version to avoid silent None trial/period values."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_billing_profile.py",
+    "/app/backend/tests/test_auth_workspace_regression.py",
+    "/app/backend/tests/test_social_rules_regression.py",
+    "/app/backend/tests/test_websocket.py"
+  ],
+  "success_rate": {"backend": "100% (26/26 pytest)", "frontend": "78% (7/9 flows; settings access blocked, /pricing deep link unsupported)"},
+  "seed_data_creation": "Created ephemeral TEST_it7_* users via /api/auth/register plus TEST_ui7_1787912740@example.com (UI register). Reused existing limit1787912518@example.com / VexorTest123! for UI login. Created communities named 'TEST_it7 ...' and one chat message 'TEST_it7 mensagem'.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "test_credentials": "limit1787912518@example.com / VexorTest123! (free tier, profile now has activity='Testando VEXOR QA', bio='bio QA it7')",
+  "context_for_next_testing_agent": "Backend billing suite lives in /app/backend/tests/test_billing_profile.py and passes 100% - reuse it for regression. All backend test files now read REACT_APP_BACKEND_URL from /app/frontend/.env as fallback (previously errored at collection). Frontend: the ONLY blocker found is the .global-tools fixed bar covering the sidebar user-dock; to test the settings panel before the fix, inject 'await page.add_style_tag(content=\".global-tools{display:none !important}\")' after login - with that, profile save ('Perfil atualizado'), persistence after reload, and the Plano tab (VEXOR Free / Limite: 50 comunidades / upgrade button) all work. Stripe checkout redirect to checkout.stripe.com verified end-to-end from the pricing page; do not complete payment.",
+  "rca_of_the_issue": "App.css line 368 defines .global-tools{position:fixed;bottom:22px;left:100px;z-index:15}. The workspace sidebar is ~274px wide and its .user-dock is pinned to the bottom (margin-top:auto), so the fixed global tools bar (x=100..472, y=1022..1058) lands directly on top of the dock row (settings button at x=291,y=1034). Because the bar has a higher stacking context, all pointer events over the settings button are captured by global-rules-button, making the settings panel unreachable. Repro: login at 1920x1080, click [data-testid=\"user-settings-button\"] -> Playwright reports interception; force click opens the community rules modal."
+}

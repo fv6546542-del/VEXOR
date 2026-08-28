@@ -1,0 +1,48 @@
+{
+  "summary": "Iteration 8 retest of the 5 fixes from iteration 7. Backend: added /app/backend/tests/test_iteration8_fixes.py (13 tests) covering billing/status auth+ownership (401 no token, 401 bad token, 404 other user, 200 owner with tier=pulse), stripe webhook malformed/non-JSON/empty/array bodies -> 400 (no 500), auth/refresh for a user deleted directly in Mongo -> 401 + refresh happy path/rotation/garbage token. Updated the two now-authenticated billing/status assertions in test_billing_profile.py. Full suite: 38/38 passed (billing+profile, auth/workspace regression, social/rules regression, websocket broadcast, api root/status). Frontend: verified global-tools bar no longer renders (count 0), topbar-friends-button and topbar-rules-button are clickable and open 'Amigos e DMs' / 'Regras da comunidade' on desktop AND mobile, user-settings-button is now clickable with no interception (elementFromPoint returns its own svg), profile save shows 'Perfil atualizado' and the message is cleared when switching to Plano and back, Plano tab shows VEXOR Free / Limite: 50 comunidades / upgrade CTA, /payment/cancel renders a dedicated 'Pagamento cancelado' card with ZERO /billing/status requests and zero console errors, pricing page for a logged-in free user shows a disabled 'Plano atual' on the free card while Pulse/Ignite remain checkout CTAs, mobile 390x844 has no overlay on the composer (elementFromPoint over the input returns the input, typing works) and the mobile menu opens the community rail. All 5 reported issues are FIXED. One pre-existing mobile gap remains: the channel-rail (which holds the user-dock/settings button and the channel list) is display:none under the mobile media query and nothing in the mobile topbar replaces it, so Configuracoes (Perfil/Plano) and channel switching are unreachable on 390px.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Workspace mobile (390x844)", "issue": "App.css mobile media query sets .channel-rail{display:none} and the mobile topbar has no settings entry, so [data-testid=\"user-settings-button\"] has a 0x0 rect (verified) and the Perfil/Plano settings panel plus the text/voice channel list are unreachable on phones. Only Amigos/Regras/Convidar/Search are exposed.", "selector": "[data-testid=\"user-settings-button\"], .channel-rail", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [
+      {"flow": "Deep links / routing", "issue": "Still no client-side router: /pricing is not deep-linkable and screen changes do not update the URL (only /payment/success and /payment/cancel are path-aware). Not a regression, carried from iteration 7.", "affected_selectors": ["[data-testid=\"pricing-page\"]"]}
+    ],
+    "design_issues": [
+      {"screen": "Workspace desktop 1920x1080", "issues": ["No overlay/contrast issues found; topbar Amigos/Regras buttons align with the other top actions, sidebar user-dock is now free of any fixed overlay"]},
+      {"screen": "Pricing / payment-cancel", "issues": ["No issues; free card correctly greyed out as 'PLANO ATUAL', cancel card centered with amber X icon and readable body copy"]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration8_fixes.py",
+    "/app/backend/tests/test_billing_profile.py",
+    "/app/backend/tests/test_auth_workspace_regression.py",
+    "/app/backend/tests/test_social_rules_regression.py",
+    "/app/backend/tests/test_websocket.py",
+    "/app/test_reports/pytest/iteration8_all.xml"
+  ],
+  "action_items": [
+    "Expose Configuracoes (settings panel) and the channel list on mobile (<=768px): e.g. add a settings icon to the mobile topbar or make the channel-rail a slide-in drawer like the community rail.",
+    "Optional (carried over): add a router so /pricing is deep-linkable and back/forward navigation works."
+  ],
+  "critical_code_review_comments": [
+    "App.js is still ~760 lines with Landing/Pricing/Auth/Workspace/Settings/Voice/PaymentResult in one file - split into components/ modules.",
+    "GlobalTools() is now a dead stub returning null and .global-tools CSS is unused - delete both to avoid confusion.",
+    "_apply_paid_session still reads subscription['current_period_end'] at the subscription root; newer Stripe API versions moved it to subscription items - verify against the pinned SDK/API version so trial/period fields do not silently become None.",
+    "billing_status now scopes by user_id and returns no _id - good; consider returning 403 vs 404 consistently documented for cross-user access (currently 404, which is the safer choice)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration8_fixes.py",
+    "/app/backend/tests/test_billing_profile.py"
+  ],
+  "success_rate": {"backend": "100% (38/38 pytest)", "frontend": "95% (all 5 iteration-7 fixes verified; only mobile settings/channel access still missing)"},
+  "seed_data_creation": "Ephemeral TEST_it8_* users via /api/auth/register (one deliberately deleted from Mongo to test refresh 401), plus two Stripe sandbox checkout sessions (pulse) for the ownership test - no payment completed. Reused limit1787912518@example.com; its activity field is now 'QA it8 atividade'.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "limit1787912518@example.com / VexorTest123! (free tier)",
+  "context_for_next_testing_agent": "All iteration-7 defects are fixed and verified. Backend suite = 38 tests in /app/backend/tests/ (run: cd /app/backend && python -m pytest tests/ -v). test_iteration8_fixes.py talks to Mongo directly (pymongo, MONGO_URL/DB_NAME from backend/.env) only to delete a throwaway test user. Frontend flows verified: login, topbar friends/rules panels (desktop+mobile), settings panel + profile save + tab message clearing, pricing free-tier 'Plano atual', /payment/cancel, mobile composer + community rail drawer. Remaining known gap: settings panel and channel list are unreachable at 390px because .channel-rail is display:none in the mobile media query.",
+  "rca_of_the_issue": "No new defects. Mobile settings gap RCA: App.css mobile media query hides .channel-rail (which contains .user-dock with [data-testid=user-settings-button] and the channel lists); the mobile topbar only got friends/rules/invite/search buttons, so there is no alternative entry point. Repro: 390x844, login, evaluate getBoundingClientRect on [data-testid=user-settings-button] -> 0x0."
+}
