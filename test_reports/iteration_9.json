@@ -1,0 +1,51 @@
+{
+  "summary": "Iteration 9 validation after the App.js split + Emergent Google Auth + mascot. Backend: full regression suite re-run (38 pre-existing tests) plus a new /app/backend/tests/test_google_auth.py (10 tests) => 48/48 passed. Verified POST /api/auth/google/session returns 401 for invalid/random session_id (no 500, no cookie set), 422 for missing body / wrong field / empty session_id / 4000-char session_id, and that password register/login/me/logout regression plus /billing/*, /communities, /channels, /friends, /dm, /stripe/webhook, PATCH /users/me and WebSocket broadcast all still work post-split. Mascot asset served at /mascot/vexor-mascot.png (HTTP 200, image/png, 1024x1024). Frontend: landing loads with data-testid=landing-mascot (naturalWidth 1024), auth-mascot loads, the Google button is enabled/clickable (text 'Continuar com Google', no 'EM BREVE', elementFromPoint returns the button itself) and navigates to https://auth.emergentagent.com/oauth/?redirect=https%3A%2F%2Fvexor-dev.preview.emergentagent.com%2F then on to accounts.google.com (real OAuth not completed). Hash callback: full page load of /#session_id=xyzinvalid123 renders data-testid=google-callback ('Concluindo login com Google...'), clears the hash, POSTs {session_id:'xyzinvalid123'} and falls back to data-testid=auth-page on 401. Workspace post-split OK: register->workspace, message send + render, settings panel with PERFIL/PLANO tabs, PLANO shows 'VEXOR Free / Limite: 50 comunidades / VER PLANOS E FAZER UPGRADE', profile save shows 'Perfil atualizado', pricing-page opens via pricing-rail-button, /payment/cancel renders 'Pagamento cancelado' with 0 /billing/status calls and 0 console errors. TierAvatar verified by intercepting /api/auth/me + /api/auth/login: tier=pulse -> class 'avatar avatar-pulse', animation-name 'pulse-ring', tier-badge-pulse rendered; tier=ignite -> 'avatar avatar-ignite', 'ignite-ring', tier-badge-ignite rendered.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/auth/google/session", "issue": "GoogleSessionPayload.session_id has min_length=8, so short ids return 422 instead of 401. /app/auth_testing.md documents `-d '{\"session_id\":\"nope\"}'` and says 'expect 401' - the doc/curl example is wrong (returns 422). Update the playbook (or relax the constraint) so future agents don't read it as a bug."},
+      {"endpoint": "GET /api/auth/me", "issue": "/app/auth_testing.md claims 'cookie fallback also supported', but current_user() only accepts the Bearer access token; a request with only the session_token cookie returns 401/403 (verified). The documented Playwright happy-path (set httpOnly session_token cookie -> goto / -> lands in workspace) therefore cannot work; App.js also only checks localStorage. Either implement the cookie fallback or correct the doc."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Landing hero mascot", "issue": "vexor-mascot.png is saved as RGB (no alpha channel, near-black background) and .hero-mascot uses z-index:3 / position:absolute over .signal-card (z-index:2). Result: a visible black square overlaps the signal card and hides part of 'Uma sala para cada conversa.' Same flat black box shows in the auth aside.", "selector": "[data-testid=\"landing-mascot\"], .hero-mascot, .signal-card", "priority": "MEDIUM"},
+      {"component": "Landing / Google entry point", "issue": "Review request states data-testid=google-auth-button should be visible on '/'; it is NOT on Landing (count 0) - it only exists in screens/Auth.js. Landing also declares an unused `onGoogle` prop that App.js never passes (dead prop).", "selector": "[data-testid=\"google-auth-button\"]", "priority": "LOW"}
+    ],
+    "integration_issues": [
+      {"flow": "Google hash callback", "issue": "POST /api/auth/google/session is fired TWICE for one session_id (verified: two identical request bodies captured). Cause: index.js wraps the app in React.StrictMode and GoogleCallback's useEffect only sets a `cancelled` flag - it never aborts the in-flight request. If the Emergent session_id is single-use, the second exchange will 401 and the user is pushed to the auth screen even though the first exchange succeeded. Guard with a module/ref-level 'already exchanged' flag or an AbortController.", "affected_selectors": ["[data-testid=\"google-callback\"]"]},
+      {"flow": "Google hash callback (SPA hash change)", "issue": "The hash is only read once in App.js useEffect([]); there is no hashchange listener, so a hash-only navigation to /#session_id=... inside an already-loaded SPA silently stays on Landing (reproduced). Real Emergent redirect does a full load so the production path works - low risk, but worth a hashchange listener.", "affected_selectors": ["[data-testid=\"google-callback\"]"]}
+    ],
+    "design_issues": [
+      {"screen": "Landing 1920x1080", "issues": ["Opaque black mascot square overlaps the LIVE signal card and truncates its headline", "Mascot art itself renders fine (1024x1024) but needs transparency to sit on the hero"]},
+      {"screen": "Auth 1920x1080", "issues": ["auth-mascot renders as a hard-edged black square under the hero copy (no alpha); rest of the layout, contrast and Google button styling are fine"]},
+      {"screen": "Workspace / settings / pricing / payment-cancel", "issues": ["No contrast or spacing issues found post-split"]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_google_auth.py",
+    "/app/test_reports/pytest/iteration9_all.xml",
+    "/app/test_reports/pytest/iteration9_google.xml"
+  ],
+  "action_items": [
+    "De-duplicate the Google session exchange in GoogleCallback (StrictMode fires the effect twice -> two POST /api/auth/google/session with the same session_id; a single-use session_id would make the second call 401 and bounce a legitimately logged-in user to /auth).",
+    "Export the mascot with a transparent background (or lower .hero-mascot z-index / move it out of the signal-card overlap) - currently an opaque black square covers hero copy.",
+    "Decide the Google entry point: either add the google-auth-button to Landing (and wire the unused onGoogle prop) or update the spec; today it exists only on the Auth screen.",
+    "Fix /app/auth_testing.md: the 'nope' curl returns 422 (session_id min_length=8) and /auth/me has NO cookie fallback, so the documented cookie-only Playwright path is invalid."
+  ],
+  "critical_code_review_comments": [
+    "App.js split is good (80 lines root, screens 40-222 lines each, server.py 746 lines) - no file exceeds the 700-line guidance except server.py which is borderline.",
+    "google_session() creates a community/channel/membership for brand-new Google users but does not check the free-tier community limit path used elsewhere - keep the creation logic in one shared helper with register() to avoid drift.",
+    "google_session() links by email alone: an existing password account is silently converted to a Google-linked account (auth_provider preserved, verified forced true). Acceptable for this app but should be an explicit product decision/log.",
+    "GoogleCallback's `cancelled` flag does not abort the fetch - use AbortController so the StrictMode duplicate request is cancelled, not just ignored.",
+    "response.set_cookie(..., samesite='none', secure=True) is correct for the preview domain; note the cookie is never read by the backend (no cookie auth path), so it is currently write-only state."
+  ],
+  "updated_files": ["/app/backend/tests/test_google_auth.py"],
+  "success_rate": {"backend": "100% (48/48 pytest)", "frontend": "90% (all functional flows pass; 1 spec mismatch on landing google button, 1 duplicate-request risk, 1 mascot overlay design issue)"},
+  "seed_data_creation": "Ephemeral TEST_it9_* users via /api/auth/register (backend tests) and one UI-registered user TEST_it9ui87914911@example.com. Reused limit1787912518@example.com (activity now 'QA it9 atividade'). No Google/oauth_sessions rows created (no real OAuth completed).",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "limit1787912518@example.com / VexorTest123! (free tier)",
+  "context_for_next_testing_agent": "Backend suite is now 48 tests: run `cd /app/backend && python -m pytest tests/ -v`. New file test_google_auth.py covers the Emergent google/session endpoint (401/422 matrix, no-cookie-on-error, mascot asset, password-auth regression); note session_id must be >=8 chars or you get 422. To exercise the hash callback in Playwright you MUST trigger a FULL page load with the hash (page.goto(url_with_hash) then page.reload()) - a hash-only goto on an already-loaded SPA does nothing. Tier avatars are verifiable by routing **/api/auth/me and **/api/auth/login and rewriting user.tier. Workspace testids: pricing-rail-button, settings-tab-profile, settings-tab-billing (NOT settings-tab-plan), user-dock-avatar, message-composer-input, send-message-button; settings tab labels render uppercase (PERFIL/PLANO) due to text-transform, so use case-insensitive assertions. Close open modals before clicking topbar buttons (voice-modal/social-panel intercepts pointer events by design). Not retested this iteration: mobile 390px channel-rail gap from iteration 8, VoiceRoom/WebRTC UI.",
+  "rca_of_the_issue": "Duplicate google/session POST: index.js renders <React.StrictMode>, so GoogleCallback's useEffect runs twice in dev; the cleanup only sets `cancelled = true` and does not abort the fetch, so two exchanges hit the backend. Mascot overlay: the generated PNG is RGB (no alpha, verified with PIL - corner pixels rgb(1,1,1)) while .hero-mascot is absolutely positioned at z-index:3 above .signal-card (z-index:2), so the opaque image covers the card text."
+}

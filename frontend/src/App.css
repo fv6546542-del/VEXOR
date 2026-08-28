@@ -113,10 +113,17 @@ a{color:inherit;text-decoration:none}
 .avatar-glow{background:linear-gradient(135deg,#ff6b8a,#ff2b3a);color:#fff;box-shadow:0 0 20px var(--red-glow)}
 .avatar-dark{background:var(--raised);color:var(--muted)}
 .avatar-outline{background:transparent;border:1px solid var(--border-strong);color:var(--muted)}
-.avatar-pulse{background:linear-gradient(135deg,#ff6b8a,#c40e1e);color:#fff;box-shadow:0 0 0 2px var(--pulse),0 0 20px rgba(255,107,138,.5)}
-.avatar-ignite{background:linear-gradient(135deg,#ffb84a,#ff2b3a);color:#111;box-shadow:0 0 0 2px var(--ignite),0 0 22px rgba(255,184,74,.55)}
+.avatar-pulse{background:linear-gradient(135deg,#ff6b8a,#c40e1e);color:#fff;box-shadow:0 0 0 2px var(--pulse),0 0 20px rgba(255,107,138,.5);animation:pulse-ring 3.2s ease-in-out infinite}
+.avatar-ignite{background:linear-gradient(135deg,#ffb84a,#ff2b3a);color:#111;box-shadow:0 0 0 2px var(--ignite),0 0 22px rgba(255,184,74,.55);animation:ignite-ring 4s ease-in-out infinite}
+@keyframes pulse-ring{0%,100%{box-shadow:0 0 0 2px var(--pulse),0 0 12px rgba(255,107,138,.35)}50%{box-shadow:0 0 0 2px var(--pulse),0 0 24px rgba(255,107,138,.7)}}
+@keyframes ignite-ring{0%,100%{box-shadow:0 0 0 2px var(--ignite),0 0 14px rgba(255,184,74,.4)}50%{box-shadow:0 0 0 2px #ff2b3a,0 0 26px rgba(255,184,74,.75)}}
 
-.hero-art{position:relative;min-height:480px;display:flex;align-items:center;justify-content:center}
+.vexor-mascot{display:block;object-fit:contain;filter:drop-shadow(0 20px 40px rgba(255,43,58,.25))}
+.hero-mascot{position:absolute;bottom:-40px;right:-60px;z-index:1;opacity:.95;pointer-events:none;animation:mascot-float 6s ease-in-out infinite;filter:drop-shadow(0 30px 60px rgba(255,43,58,.35))}
+@keyframes mascot-float{0%,100%{transform:translateY(0)}50%{transform:translateY(-10px)}}
+.auth-mascot{margin-top:36px;opacity:.9;filter:drop-shadow(0 20px 40px rgba(255,43,58,.3))}
+
+.hero-art{position:relative;min-height:480px;display:flex;align-items:center;justify-content:center;overflow:visible}
 .hero-orb{
   position:absolute;inset:auto;width:min(460px,88%);aspect-ratio:1;border-radius:50%;
   background:radial-gradient(circle at 30% 30%,rgba(255,43,58,.55) 0,rgba(196,14,30,.15) 40%,transparent 70%);

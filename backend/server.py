@@ -8,10 +8,11 @@ import secrets
 import uuid
 
 import bcrypt
+import httpx
 import jwt
 import stripe
 from dotenv import load_dotenv
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
@@ -147,6 +148,9 @@ class CheckoutRequest(BaseModel):
     lookup_key: str
     origin_url: str
 
+class GoogleSessionPayload(BaseModel):
+    session_id: str = Field(min_length=8, max_length=200)
+
 class StatusCheck(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -246,8 +250,12 @@ async def refresh(payload: RefreshPayload):
     return await issue_tokens(user)
 
 @api_router.post("/auth/logout")
-async def logout(payload: RefreshPayload):
+async def logout(payload: RefreshPayload, request: Request, response: Response):
     await db.sessions.update_many({"token_hash": hashlib.sha256(payload.refresh_token.encode()).hexdigest()}, {"$set": {"revoked": True}})
+    cookie_token = request.cookies.get("session_token")
+    if cookie_token:
+        await db.oauth_sessions.delete_one({"session_token": cookie_token})
+        response.delete_cookie("session_token", path="/")
     return {"ok": True}
 
 @api_router.post("/auth/recovery/request")
@@ -271,6 +279,72 @@ async def verify_recovery(payload: RecoveryVerifyPayload):
 @api_router.get("/auth/me")
 async def me(user: Dict[str, Any] = Depends(current_user)):
     return public_user(user)
+
+@api_router.post("/auth/google/session")
+async def google_session(payload: GoogleSessionPayload, response: Response):
+    # REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
+    try:
+        async with httpx.AsyncClient(timeout=12) as http:
+            emergent = await http.get(
+                "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
+                headers={"X-Session-ID": payload.session_id},
+            )
+    except httpx.HTTPError:
+        raise HTTPException(status_code=502, detail="Falha ao contatar Emergent Auth")
+    if emergent.status_code != 200:
+        raise HTTPException(status_code=401, detail="Sessão Google inválida ou expirada")
+    data = emergent.json()
+    email = (data.get("email") or "").lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="E-mail não retornado pelo Google")
+    session_token = data.get("session_token")
+    picture = data.get("picture")
+    display_name = data.get("name") or email.split("@")[0]
+    user = await db.users.find_one({"email": email}, {"_id": 0})
+    if not user:
+        username = email.split("@")[0].replace(".", "_")[:32] or f"user_{uuid.uuid4().hex[:6]}"
+        if await db.users.find_one({"username": username}, {"_id": 0}):
+            username = f"{username[:24]}_{uuid.uuid4().hex[:4]}"
+        user = {
+            "id": str(uuid.uuid4()),
+            "email": email,
+            "username": username,
+            "password_hash": "",
+            "role": "Member",
+            "verified": True,
+            "avatar_url": picture,
+            "bio": "",
+            "activity": "",
+            "auth_provider": "google",
+            "tier": "free",
+            "created_at": now(),
+            "display_name": display_name,
+        }
+        await db.users.insert_one(user.copy())
+        community = {"id": str(uuid.uuid4()), "name": f"{username}'s Lab", "description": "Sua primeira comunidade VEXOR", "owner_id": user["id"], "created_at": now()}
+        await db.communities.insert_one(community.copy())
+        channel = {"id": str(uuid.uuid4()), "community_id": community["id"], "name": "general", "kind": "text", "created_at": now()}
+        await db.channels.insert_one(channel.copy())
+        await db.community_members.insert_one({"community_id": community["id"], "user_id": user["id"], "role": "Owner", "joined_at": now()})
+    else:
+        updates: Dict[str, Any] = {"auth_provider": user.get("auth_provider") or "google", "verified": True}
+        if picture and not user.get("avatar_url"):
+            updates["avatar_url"] = picture
+        await db.users.update_one({"id": user["id"]}, {"$set": updates})
+        user.update(updates)
+    if session_token:
+        await db.oauth_sessions.update_one(
+            {"session_token": session_token},
+            {"$set": {
+                "session_token": session_token,
+                "user_id": user["id"],
+                "expires_at": (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(),
+                "created_at": now(),
+            }},
+            upsert=True,
+        )
+        response.set_cookie("session_token", session_token, max_age=7 * 24 * 3600, httponly=True, secure=True, samesite="none", path="/")
+    return await issue_tokens(user)
 
 @api_router.get("/users/search")
 async def search_users(q: str = Query(min_length=2), user: Dict[str, Any] = Depends(current_user)):
@@ -660,7 +734,11 @@ async def websocket_room(websocket: WebSocket, room: str, token: Optional[str] =
         await manager.broadcast({"type": "presence", "room": room, "status": "disconnected", "user_id": user["id"] if user else None}, room)
 
 app.include_router(api_router)
-app.add_middleware(CORSMiddleware, allow_credentials=True, allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","), allow_methods=["*"], allow_headers=["*"])
+_cors_origins = [origin.strip() for origin in os.environ.get("CORS_ORIGINS", "*").split(",") if origin.strip()]
+if _cors_origins == ["*"]:
+    app.add_middleware(CORSMiddleware, allow_credentials=False, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+else:
+    app.add_middleware(CORSMiddleware, allow_credentials=True, allow_origins=_cors_origins, allow_methods=["*"], allow_headers=["*"])
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
