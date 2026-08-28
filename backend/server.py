@@ -24,7 +24,7 @@ db = client[os.environ["DB_NAME"]]
 app = FastAPI(title="VEXOR API")
 api_router = APIRouter(prefix="/api")
 security = HTTPBearer(auto_error=False)
-JWT_SECRET = os.environ.get("JWT_SECRET", secrets.token_urlsafe(32))
+JWT_SECRET = os.environ["JWT_SECRET"]
 JWT_ALGORITHM = "HS256"
 ACCESS_MINUTES = 30
 REFRESH_DAYS = 14
@@ -96,6 +96,15 @@ class ModerationAction(BaseModel):
 
 class RoleUpdate(BaseModel):
     role: str
+
+class TextPayload(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+
+class FriendAction(BaseModel):
+    action: str
+
+class RulesPayload(BaseModel):
+    rules: List[str] = Field(min_length=1, max_length=30)
 
 class StatusCheck(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -220,6 +229,60 @@ async def verify_recovery(payload: RecoveryVerifyPayload):
 async def me(user: Dict[str, Any] = Depends(current_user)):
     return public_user(user)
 
+@api_router.get("/users/search")
+async def search_users(q: str = Query(min_length=2), user: Dict[str, Any] = Depends(current_user)):
+    users = await db.users.find({"username": {"$regex": q, "$options": "i"}, "id": {"$ne": user["id"]}}, {"_id": 0, "password_hash": 0}).to_list(20)
+    return [public_user(item) for item in users]
+
+@api_router.get("/friends")
+async def list_friends(user: Dict[str, Any] = Depends(current_user)):
+    records = await db.friendships.find({"$or": [{"requester_id": user["id"]}, {"recipient_id": user["id"]}]}, {"_id": 0}).to_list(200)
+    ids = [record["recipient_id"] if record["requester_id"] == user["id"] else record["requester_id"] for record in records if record["status"] == "accepted"]
+    friends = await db.users.find({"id": {"$in": ids}}, {"_id": 0}).to_list(200)
+    return [public_user(item) for item in friends]
+
+@api_router.post("/friends/{target_user_id}")
+async def friend_request(target_user_id: str, user: Dict[str, Any] = Depends(current_user)):
+    if target_user_id == user["id"]:
+        raise HTTPException(status_code=400, detail="Você não pode adicionar a si mesmo")
+    target = await db.users.find_one({"id": target_user_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+    existing = await db.friendships.find_one({"$or": [{"requester_id": user["id"], "recipient_id": target_user_id}, {"requester_id": target_user_id, "recipient_id": user["id"]}]}, {"_id": 0})
+    if existing and existing.get("status") == "accepted":
+        return {"ok": True, "status": "accepted"}
+    if existing and existing.get("status") == "pending":
+        raise HTTPException(status_code=409, detail="Solicitação já enviada")
+    record = {"id": str(uuid.uuid4()), "requester_id": user["id"], "recipient_id": target_user_id, "status": "pending", "created_at": now()}
+    await db.friendships.update_one({"requester_id": user["id"], "recipient_id": target_user_id}, {"$setOnInsert": record}, upsert=True)
+    return {"ok": True, "status": "pending"}
+
+@api_router.patch("/friends/{request_id}")
+async def friend_action(request_id: str, payload: FriendAction, user: Dict[str, Any] = Depends(current_user)):
+    if payload.action not in ("accepted", "rejected"):
+        raise HTTPException(status_code=400, detail="Ação inválida")
+    result = await db.friendships.update_one({"id": request_id, "recipient_id": user["id"], "status": "pending"}, {"$set": {"status": payload.action}})
+    if not result.matched_count:
+        raise HTTPException(status_code=404, detail="Solicitação não encontrada")
+    return {"ok": True, "status": payload.action}
+
+@api_router.get("/dm/{target_user_id}")
+async def get_dm(target_user_id: str, user: Dict[str, Any] = Depends(current_user)):
+    query = {"$or": [{"sender_id": user["id"], "recipient_id": target_user_id}, {"sender_id": target_user_id, "recipient_id": user["id"]}]}
+    return await db.direct_messages.find(query, {"_id": 0}).sort("created_at", 1).to_list(1000)
+
+@api_router.post("/dm/{target_user_id}")
+async def send_dm(target_user_id: str, payload: TextPayload, user: Dict[str, Any] = Depends(current_user)):
+    target = await db.users.find_one({"id": target_user_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+    blocked = await db.blocks.find_one({"$or": [{"user_id": user["id"], "blocked_user_id": target_user_id}, {"user_id": target_user_id, "blocked_user_id": user["id"]}]}, {"_id": 0})
+    if blocked:
+        raise HTTPException(status_code=403, detail="DM bloqueada entre estes usuários")
+    message = {"id": str(uuid.uuid4()), "sender_id": user["id"], "recipient_id": target_user_id, "text": payload.text.strip(), "created_at": now()}
+    await db.direct_messages.insert_one(message.copy())
+    return message
+
 @api_router.get("/communities")
 async def list_communities(user: Dict[str, Any] = Depends(current_user)):
     memberships = await db.community_members.find({"user_id": user["id"]}, {"_id": 0}).to_list(1000)
@@ -238,6 +301,29 @@ async def create_community(payload: CommunityCreate, user: Dict[str, Any] = Depe
 async def list_channels(community_id: str, user: Dict[str, Any] = Depends(current_user)):
     await require_member(community_id, user["id"])
     return await db.channels.find({"community_id": community_id}, {"_id": 0}).to_list(1000)
+
+@api_router.get("/communities/{community_id}/rules")
+async def get_rules(community_id: str, user: Dict[str, Any] = Depends(current_user)):
+    await require_member(community_id, user["id"], enforce_rules=False)
+    rules = await db.community_rules.find_one({"community_id": community_id}, {"_id": 0})
+    return rules or {"community_id": community_id, "rules": [], "version": 1}
+
+@api_router.put("/communities/{community_id}/rules")
+async def update_rules(community_id: str, payload: RulesPayload, user: Dict[str, Any] = Depends(current_user)):
+    membership = await require_member(community_id, user["id"], enforce_rules=False)
+    if membership["role"] not in ("Owner", "Admin"):
+        raise HTTPException(status_code=403, detail="Apenas Owner/Admin podem editar regras")
+    rules = {"community_id": community_id, "rules": payload.rules, "version": int(datetime.now(timezone.utc).timestamp())}
+    await db.community_rules.replace_one({"community_id": community_id}, rules, upsert=True)
+    await write_audit(user, community_id, "rules.updated", user["id"], "regras atualizadas")
+    return rules
+
+@api_router.post("/communities/{community_id}/rules/accept")
+async def accept_rules(community_id: str, user: Dict[str, Any] = Depends(current_user)):
+    await require_member(community_id, user["id"], enforce_rules=False)
+    rules = await db.community_rules.find_one({"community_id": community_id}, {"_id": 0})
+    await db.rules_acceptance.update_one({"community_id": community_id, "user_id": user["id"]}, {"$set": {"community_id": community_id, "user_id": user["id"], "version": rules.get("version", 1) if rules else 1, "accepted_at": now()}}, upsert=True)
+    return {"ok": True, "accepted": True}
 
 @api_router.post("/communities/{community_id}/channels")
 async def create_channel(community_id: str, payload: ChannelCreate, user: Dict[str, Any] = Depends(current_user)):
@@ -263,6 +349,14 @@ async def create_invite(community_id: str, payload: InviteCreate, user: Dict[str
     invite = {"id": secrets.token_urlsafe(8), "community_id": community_id, "created_by": user["id"], "expires_at": (datetime.now(timezone.utc) + timedelta(hours=payload.expires_hours)).isoformat(), "created_at": now()}
     await db.invites.insert_one(invite.copy())
     return invite
+
+@api_router.post("/invites/{invite_id}/accept")
+async def accept_invite(invite_id: str, user: Dict[str, Any] = Depends(current_user)):
+    invite = await db.invites.find_one({"id": invite_id}, {"_id": 0})
+    if not invite or datetime.fromisoformat(invite["expires_at"]) < datetime.now(timezone.utc):
+        raise HTTPException(status_code=404, detail="Convite inválido ou expirado")
+    await db.community_members.update_one({"community_id": invite["community_id"], "user_id": user["id"]}, {"$setOnInsert": {"community_id": invite["community_id"], "user_id": user["id"], "role": "Member", "joined_at": now()}}, upsert=True)
+    return {"ok": True, "community_id": invite["community_id"]}
 
 @api_router.post("/communities/{community_id}/reports")
 async def report_user(community_id: str, payload: ReportCreate, user: Dict[str, Any] = Depends(current_user)):
@@ -309,13 +403,18 @@ async def audit_log(community_id: str, user: Dict[str, Any] = Depends(current_us
         raise HTTPException(status_code=403, detail="Sem acesso ao audit log")
     return await db.audit_logs.find({"community_id": community_id}, {"_id": 0}).sort("created_at", -1).to_list(500)
 
-async def require_member(community_id: str, user_id: str):
+async def require_member(community_id: str, user_id: str, enforce_rules: bool = True):
     membership = await db.community_members.find_one({"community_id": community_id, "user_id": user_id}, {"_id": 0})
     if not membership:
         raise HTTPException(status_code=403, detail="Você não faz parte desta comunidade")
     banned = await db.bans.find_one({"community_id": community_id, "user_id": user_id}, {"_id": 0})
     if banned:
         raise HTTPException(status_code=403, detail="Você foi banido desta comunidade")
+    rules = await db.community_rules.find_one({"community_id": community_id}, {"_id": 0})
+    if enforce_rules and rules and rules.get("rules"):
+        accepted = await db.rules_acceptance.find_one({"community_id": community_id, "user_id": user_id, "version": rules.get("version")}, {"_id": 0})
+        if not accepted:
+            raise HTTPException(status_code=403, detail="Aceite as regras da comunidade para continuar")
     return membership
 
 async def write_audit(user: Dict[str, Any], community_id: str, action: str, target: str, reason: str):
@@ -343,8 +442,8 @@ async def websocket_room(websocket: WebSocket, room: str, token: Optional[str] =
                 message = {"id": str(uuid.uuid4()), "channel_id": room, "author_id": user["id"] if user else "anonymous", "author": user["username"] if user else payload.get("author", "Você"), "text": payload["text"].strip(), "created_at": now()}
                 await db.messages.insert_one(message.copy())
                 await manager.broadcast({"type": "message", **message}, room)
-            elif payload.get("type") in ("voice-join", "voice-offer", "voice-answer", "voice-ice"):
-                signal = {"type": "voice-peer-joined" if payload["type"] == "voice-join" else payload["type"], "peer_id": payload.get("peer_id"), "target_id": payload.get("target_id"), "description": payload.get("description"), "candidate": payload.get("candidate")}
+            elif payload.get("type") in ("voice-join", "voice-offer", "voice-answer", "voice-ice", "screen-start", "screen-stop"):
+                signal = {"type": "voice-peer-joined" if payload["type"] == "voice-join" else payload["type"], "peer_id": payload.get("peer_id"), "target_id": payload.get("target_id"), "description": payload.get("description"), "candidate": payload.get("candidate"), "has_audio": payload.get("has_audio", False)}
                 await manager.broadcast(signal, room, exclude=websocket)
     except WebSocketDisconnect:
         manager.disconnect(websocket, room)

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="2" failures="0" skipped="1" tests="5" time="0.862" timestamp="2026-08-23T09:58:24.053701+00:00" hostname="agent-env-1a6cd0a8-85a1-49d7-a8e9-2f37a927c35d"><testcase classname="" name="tests.test_auth_workspace_regression" time="0.000"><error message="collection failure">backend/tests/test_auth_workspace_regression.py:8: in &lt;module&gt;
+    BASE_URL = os.environ["REACT_APP_BACKEND_URL"].rstrip("/")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+&lt;frozen os&gt;:679: in __getitem__
+    ???
+E   KeyError: 'REACT_APP_BACKEND_URL'</error><error message="collection failure">backend/tests/test_auth_workspace_regression.py:8: in &lt;module&gt;
+    BASE_URL = os.environ["REACT_APP_BACKEND_URL"].rstrip("/")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+&lt;frozen os&gt;:679: in __getitem__
+    ???
+E   KeyError: 'REACT_APP_BACKEND_URL'</error></testcase><testcase classname="" name="tests.test_websocket" time="0.000"><skipped message="collection skipped">('/app/backend/tests/test_websocket.py', 14, 'Skipped: REACT_APP_BACKEND_URL is required')</skipped></testcase><testcase classname="tests.test_vexor_api" name="test_api_root_is_available" time="0.145" /><testcase classname="tests.test_vexor_api" name="test_status_create_and_list" time="0.195" /></testsuite></testsuites>
